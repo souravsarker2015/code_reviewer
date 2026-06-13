@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+.venv/
+node_modules/
+.next/
+dist/
+build/
+data/repos/*
+data/chroma/*
+data/app.db
+!data/repos/.gitkeep
+!data/chroma/.gitkeep
