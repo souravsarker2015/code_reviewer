@@ -7,6 +7,7 @@ A simple local full-stack RAG chat app for GitHub projects.
 - Vector database: local ChromaDB
 - Database: SQLite at `data/app.db`
 - Git clone/indexing: GitPython
+- GitHub commit metadata: GitHub API when available, with GitPython fallback
 - RAG orchestration: LangChain
 - LLM and embeddings: local Ollama models
 
@@ -131,5 +132,9 @@ The frontend runs at `http://localhost:3000` and the API runs at `http://localho
 - Project names must match an uploaded project. If a name is misspelled, the app will ask you to check spelling and show available projects.
 - Asking for recent commits plus code quality review reviews recent commit diffs instead of only listing commits.
 - The chat UI keeps the current conversation in memory and sends recent turns to the API, so follow-up questions can refer to the same project or previous commit list.
+- You can filter commit questions by author, for example: `show chabot-mvp project commit messages by sourov-ws` or `review chabot-mvp project commits by sourov-ws for code quality`.
+- GitHub web usernames can differ from local git author names. For GitHub repos, commit questions use the GitHub API when available, so `sourov-wsit` style usernames work too. Set `GITHUB_TOKEN` in `.env` if you hit GitHub API rate limits.
+- Pull request questions also use live GitHub API data, for example: `show open PRs for chabot-mvp`, `show PR #12`, or `is PR #12 mergeable with main`.
+- Mergeability against a PR's base branch uses GitHub's PR mergeability status. Mergeability against another branch uses a local `git merge-tree` check on the cloned repo.
 - Tune recent commit review size with `MAX_REVIEW_DIFF_CHARS` and `REVIEW_COMMIT_LIMIT`.
 - LangChain has git loaders, but this app keeps GitPython and custom chunking so citations can include exact line ranges.
