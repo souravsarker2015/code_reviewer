@@ -117,6 +117,7 @@ The frontend runs at `http://localhost:3000` and the API runs at `http://localho
 6. Lets you ask questions across all projects or one selected project.
 7. Returns answers with citations showing project name, file path, and line range.
 8. Provides simple git lookups for recent commits, branches, and file history.
+9. Routes chat questions about commits, branches, and file history to GitPython.
 
 ## Notes
 
@@ -125,4 +126,10 @@ The frontend runs at `http://localhost:3000` and the API runs at `http://localho
 - Re-uploading a project updates the clone and replaces that project's indexed chunks.
 - The default models can be changed in `.env` with `OLLAMA_CHAT_MODEL` and `OLLAMA_EMBEDDING_MODEL`.
 - If you change embedding models after indexing, use a new `CHROMA_COLLECTION` or clear `data/chroma`.
+- If indexing fails with an Ollama context-length error, lower `MAX_CHUNK_CHARS` in `.env` and upload again.
+- Recent commit, branch, and file-history questions do not need embeddings; they read from the local cloned repo.
+- Project names must match an uploaded project. If a name is misspelled, the app will ask you to check spelling and show available projects.
+- Asking for recent commits plus code quality review reviews recent commit diffs instead of only listing commits.
+- The chat UI keeps the current conversation in memory and sends recent turns to the API, so follow-up questions can refer to the same project or previous commit list.
+- Tune recent commit review size with `MAX_REVIEW_DIFF_CHARS` and `REVIEW_COMMIT_LIMIT`.
 - LangChain has git loaders, but this app keeps GitPython and custom chunking so citations can include exact line ranges.
