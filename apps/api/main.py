@@ -573,6 +573,47 @@ def github_commit_metadata(
     return commits
 
 
+def github_file_commit_metadata(
+    project: sqlite3.Row | dict[str, Any],
+    file_path: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    remote = parse_github_remote(project["repo_url"])
+    if not remote:
+        return []
+    owner, repo = remote
+    params = {
+        "sha": project["branch"],
+        "path": file_path,
+        "per_page": str(min(max(limit, 1), 100)),
+    }
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits?{urllib.parse.urlencode(params)}"
+    data = github_request(url)
+    if not isinstance(data, list):
+        return []
+
+    commits = []
+    for item in data:
+        commit = item.get("commit") or {}
+        git_author = commit.get("author") or {}
+        github_author = item.get("author") or {}
+        message = (commit.get("message") or "").strip().splitlines()[0]
+        sha = item.get("sha") or ""
+        commits.append(
+            {
+                "sha": sha[:10],
+                "full_sha": sha,
+                "author": github_author.get("login") or git_author.get("name") or "unknown",
+                "git_author": git_author.get("name") or "unknown",
+                "email": git_author.get("email") or "",
+                "date": git_author.get("date") or "",
+                "message": message,
+                "url": item.get("html_url") or "",
+            }
+        )
+    return commits
+
+
 def github_metadata_by_sha(metadata: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     return {item["full_sha"]: item for item in metadata if item.get("full_sha")}
 
@@ -857,6 +898,199 @@ def history_context(request: ChatRequest) -> str:
 def history_has_recent_commits(request: ChatRequest) -> bool:
     text = history_context(request).lower()
     return "recent commits for" in text or "recent commit code-quality review" in text
+
+
+def extract_commit_refs(question: str) -> list[str]:
+    return re.findall(r"\b[0-9a-fA-F]{7,40}\b", question)
+
+
+def extract_branch_pair(question: str) -> tuple[str, str] | None:
+    patterns = [
+        r"compare\s+(?:branch(?:es)?\s+)?`?([A-Za-z0-9._/-]+)`?\s+(?:and|with|to|vs|versus)\s+(?:branch(?:es)?\s+)?`?([A-Za-z0-9._/-]+)`?",
+        r"(?:diff|difference)\s+(?:between|from)\s+(?:branch(?:es)?\s+)?`?([A-Za-z0-9._/-]+)`?\s+(?:and|with|to|vs|versus)\s+(?:branch(?:es)?\s+)?`?([A-Za-z0-9._/-]+)`?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, question, re.I)
+        if match:
+            return match.group(1).strip("`'\".,:; "), match.group(2).strip("`'\".,:; ")
+    return None
+
+
+def extract_file_path_from_question(question: str) -> str | None:
+    quoted = re.search(r"`([^`]+)`", question)
+    if quoted:
+        return quoted.group(1).strip()
+    patterns = [
+        r"(?:file|path)\s+([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)",
+        r"(?:changed|change|history|review)\s+([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)",
+        r"([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, question, re.I)
+        if match:
+            return match.group(1).strip("`'\".,:; ")
+    return None
+
+
+def diff_name_status(repo: Repo, start_ref: str, end_ref: str) -> list[str]:
+    try:
+        output = repo.git.diff("--name-status", f"{start_ref}..{end_ref}")
+    except Exception:
+        return []
+    return [line for line in output.splitlines() if line.strip()]
+
+
+def risky_changes_between_commits(project: sqlite3.Row, repo: Repo, start_sha: str, end_sha: str) -> ChatResponse:
+    try:
+        start_commit = repo.commit(start_sha)
+        end_commit = repo.commit(end_sha)
+        diff_text = repo.git.diff(start_commit.hexsha, end_commit.hexsha)
+    except Exception as exc:
+        return ChatResponse(
+            answer=f"Could not compare commits {start_sha} and {end_sha} in {project['project_name']}: {exc}",
+            citations=[],
+        )
+
+    changed_files = diff_name_status(repo, start_commit.hexsha, end_commit.hexsha)
+    findings = review_diff_findings([diff_text[:MAX_REVIEW_DIFF_CHARS]], changed_files)
+    lines = [
+        f"Risky changes between {start_commit.hexsha[:10]} and {end_commit.hexsha[:10]} for {project['project_name']}:",
+        "",
+        "Changed files:",
+        *[f"- {line}" for line in changed_files[:30]],
+        "",
+        "Findings:",
+        *[f"- {finding}" for finding in findings],
+    ]
+    return ChatResponse(
+        answer="\n".join(lines),
+        citations=[
+            {
+                "project_name": project["project_name"],
+                "file_path": ".git",
+                "line_range": f"{start_commit.hexsha[:10]}..{end_commit.hexsha[:10]}",
+                "start_line": 0,
+                "end_line": 0,
+                "text": diff_text[:8000],
+            }
+        ],
+    )
+
+
+def compare_branches(project: sqlite3.Row, repo: Repo, left_branch: str, right_branch: str) -> ChatResponse:
+    sync_repo(project, repo)
+
+    def available_branch_text() -> str:
+        local = [head.name for head in repo.heads]
+        remote = [ref.name for ref in repo.remote().refs]
+        return f"Local: {', '.join(local) or 'none'}; Remote: {', '.join(remote) or 'none'}"
+
+    def resolve_ref(branch: str) -> str | None:
+        candidates = [branch]
+        if not branch.startswith("origin/"):
+            candidates.insert(0, f"origin/{branch}")
+        for candidate in candidates:
+            try:
+                repo.git.rev_parse("--verify", f"{candidate}^{{commit}}")
+                return candidate
+            except Exception:
+                continue
+        return None
+
+    left_ref = resolve_ref(left_branch)
+    right_ref = resolve_ref(right_branch)
+    missing = [branch for branch, ref in ((left_branch, left_ref), (right_branch, right_ref)) if not ref]
+    if missing:
+        return ChatResponse(
+            answer=(
+                f"Could not find branch {', '.join(repr(branch) for branch in missing)} "
+                f"in {project['project_name']}. Available branches: {available_branch_text()}."
+            ),
+            citations=[],
+        )
+
+    try:
+        ahead_behind = repo.git.rev_list("--left-right", "--count", f"{left_ref}...{right_ref}").split()
+        left_only, right_only = ahead_behind[0], ahead_behind[1]
+        changed_files = diff_name_status(repo, left_ref, right_ref)
+        stat = repo.git.diff("--stat", f"{left_ref}..{right_ref}")
+    except Exception as exc:
+        return ChatResponse(
+            answer=f"Could not compare branches '{left_branch}' and '{right_branch}' in {project['project_name']}: {exc}",
+            citations=[],
+        )
+
+    lines = [
+        f"Branch comparison for {project['project_name']}: {left_branch} vs {right_branch}",
+        f"- Commits only on {left_branch}: {left_only}",
+        f"- Commits only on {right_branch}: {right_only}",
+        "",
+        "Changed files:",
+        *[f"- {line}" for line in changed_files[:40]],
+    ]
+    if stat:
+        lines.extend(["", "Diff stat:", stat])
+    return ChatResponse(
+        answer="\n".join(lines),
+        citations=[
+            {
+                "project_name": project["project_name"],
+                "file_path": ".git",
+                "line_range": f"{left_branch}...{right_branch}",
+                "start_line": 0,
+                "end_line": 0,
+                "text": "\n".join(changed_files) + ("\n\n" + stat if stat else ""),
+            }
+        ],
+    )
+
+
+def file_changers(project: sqlite3.Row, repo: Repo, file_path: str, limit: int) -> ChatResponse:
+    github_commits = github_file_commit_metadata(project, file_path, limit)
+    if github_commits:
+        lines = [f"Recent changes for {project['project_name']}:{file_path}:"]
+        for commit in github_commits:
+            lines.append(
+                f"- {commit['sha']} | {commit['date']} | {commit['author']} | {commit['message']}"
+                + (f" | {commit['url']}" if commit.get("url") else "")
+            )
+        return ChatResponse(
+            answer="\n".join(lines),
+            citations=[
+                {
+                    "project_name": project["project_name"],
+                    "file_path": file_path,
+                    "line_range": "file history",
+                    "start_line": 0,
+                    "end_line": 0,
+                    "text": "\n".join(lines[1:]),
+                }
+            ],
+        )
+
+    commits = list(repo.iter_commits(paths=file_path, max_count=limit))
+    if not commits:
+        return ChatResponse(
+            answer=f"I could not find recent changes for '{file_path}' in {project['project_name']}.",
+            citations=[],
+        )
+    lines = [f"Recent changes for {project['project_name']}:{file_path}:"]
+    for commit in commits:
+        payload = commit_payload(commit)
+        lines.append(f"- {payload['sha']} | {payload['date']} | {payload['author']} | {payload['message']}")
+    return ChatResponse(
+        answer="\n".join(lines),
+        citations=[
+            {
+                "project_name": project["project_name"],
+                "file_path": file_path,
+                "line_range": "file history",
+                "start_line": 0,
+                "end_line": 0,
+                "text": "\n".join(lines[1:]),
+            }
+        ],
+    )
 
 
 def limited_commit_diff(repo: Repo, commit: Any, remaining_chars: int) -> str:
@@ -1226,11 +1460,31 @@ def git_chat_response(request: ChatRequest) -> ChatResponse | None:
     wants_commits = wants_commit_messages or mentions_commit or any(
         term in question for term in ("recent commit", "latest commit", "last commit", "commit history")
     )
+    wants_commit_summary = wants_commits and any(term in question for term in ("summarize", "summary", "overview"))
     wants_branches = "branch" in question or "branches" in question
-    wants_file_history = "file history" in question or "history of file" in question or "history for file" in question
+    branch_pair = extract_branch_pair(request.question)
+    commit_refs = extract_commit_refs(request.question)
+    wants_risky_diff = len(commit_refs) >= 2 and any(
+        term in question for term in ("risky", "risk", "between", "compare", "diff", "changes")
+    )
+    wants_file_history = (
+        "file history" in question
+        or "history of file" in question
+        or "history for file" in question
+        or "who changed" in question
+        or "changed this file" in question
+        or "changed file" in question
+    )
     wants_previous_commit_review = wants_code_review(request.question) and refers_to_previous(request.question) and history_has_recent_commits(request)
 
-    if not (wants_commits or wants_branches or wants_file_history or wants_previous_commit_review):
+    if not (
+        wants_commits
+        or wants_branches
+        or branch_pair
+        or wants_risky_diff
+        or wants_file_history
+        or wants_previous_commit_review
+    ):
         return None
 
     project, note = resolve_project(
@@ -1246,6 +1500,12 @@ def git_chat_response(request: ChatRequest) -> ChatResponse | None:
     sync_repo(project, repo)
     author = extract_author_candidate(request.question, project["project_name"])
     commit_limit = requested_commit_limit(request.question)
+
+    if branch_pair:
+        return compare_branches(project, repo, branch_pair[0], branch_pair[1])
+
+    if wants_risky_diff:
+        return risky_changes_between_commits(project, repo, commit_refs[0], commit_refs[1])
 
     if (wants_commits and wants_code_review(request.question)) or wants_previous_commit_review:
         return review_recent_commits(
@@ -1277,7 +1537,8 @@ def git_chat_response(request: ChatRequest) -> ChatResponse | None:
                 citations=[],
             )
         lines = [
-            f"{prefix}Recent "
+            f"{prefix}"
+            + ("Summary of " if wants_commit_summary else "Recent ")
             + ("commit messages" if wants_commit_messages else "commits")
             + f" for {project['project_name']}"
             + (f" by {author}" if author else "")
@@ -1287,6 +1548,17 @@ def git_chat_response(request: ChatRequest) -> ChatResponse | None:
             lines.append(
                 f"- {commit['sha']} | {commit['date']} | {commit['author']} | {commit['message']}"
                 + (f" | {commit['url']}" if commit.get("url") else "")
+            )
+        if wants_commit_summary:
+            authors = sorted({commit["author"] for commit in commits})
+            lines.extend(
+                [
+                    "",
+                    f"Total commits summarized: {len(commits)}",
+                    f"Authors: {', '.join(authors)}",
+                    "Main themes:",
+                    *[f"- {commit['message']}" for commit in commits[:5]],
+                ]
             )
         return ChatResponse(
             answer="\n".join(lines),
@@ -1325,37 +1597,13 @@ def git_chat_response(request: ChatRequest) -> ChatResponse | None:
         )
 
     if wants_file_history:
-        path_match = re.search(r"(?:file history|history of file|history for file)\s+`?([^`\s?]+)`?", request.question, re.I)
-        if not path_match:
+        file_path = extract_file_path_from_question(request.question)
+        if not file_path:
             return ChatResponse(
-                answer="Which file should I show history for? Example: file history apps/api/main.py",
+                answer="Which file should I check? Example: who changed `app/static/app.js` recently",
                 citations=[],
             )
-        file_path = path_match.group(1)
-        commits = [commit_payload(commit) for commit in repo.iter_commits(paths=file_path, max_count=10)]
-        if not commits:
-            return ChatResponse(
-                answer=f"I could not find commit history for '{file_path}' in {project['project_name']}.",
-                citations=[],
-            )
-        lines = [f"{prefix}File history for {project['project_name']}:{file_path}:"]
-        for commit in commits:
-            lines.append(
-                f"- {commit['sha']} | {commit['date']} | {commit['author']} | {commit['message']}"
-            )
-        return ChatResponse(
-            answer="\n".join(lines),
-            citations=[
-                {
-                    "project_name": project["project_name"],
-                    "file_path": file_path,
-                    "line_range": "file history",
-                    "start_line": 0,
-                    "end_line": 0,
-                    "text": "\n".join(lines[1:]),
-                }
-            ],
-        )
+        return file_changers(project, repo, file_path, commit_limit)
 
     return None
 

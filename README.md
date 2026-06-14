@@ -117,8 +117,31 @@ The frontend runs at `http://localhost:3000` and the API runs at `http://localho
 5. Creates Ollama embeddings through LangChain and stores them in local ChromaDB.
 6. Lets you ask questions across all projects or one selected project.
 7. Returns answers with citations showing project name, file path, and line range.
-8. Provides simple git lookups for recent commits, branches, and file history.
-9. Routes chat questions about commits, branches, and file history to GitPython.
+8. Provides git lookups for recent commits, commit summaries, branches, file history, risky diffs, and branch comparisons.
+9. Uses live GitHub API data for commit usernames and pull requests when the repo is hosted on GitHub.
+
+## Example Questions
+
+RAG questions use the indexed repository files and return file/line citations:
+
+```text
+Explain this project architecture
+What does this function do?
+Find code quality problems
+Generate documentation from this repo
+Where is authentication handled?
+```
+
+Git questions read dynamically from the cloned repo or GitHub API:
+
+```text
+Summarize last 10 commits for chabot-mvp project
+Who changed app/static/app.js recently in chabot-mvp project?
+Show risky changes between 2cd8ed59f4 and ecf42917e8 in chabot-mvp project
+Compare branch master and main for chabot-mvp project
+Show open PRs for chabot-mvp project
+Is PR #12 mergeable with main for chabot-mvp project?
+```
 
 ## Notes
 
@@ -128,7 +151,7 @@ The frontend runs at `http://localhost:3000` and the API runs at `http://localho
 - The default models can be changed in `.env` with `OLLAMA_CHAT_MODEL` and `OLLAMA_EMBEDDING_MODEL`.
 - If you change embedding models after indexing, use a new `CHROMA_COLLECTION` or clear `data/chroma`.
 - If indexing fails with an Ollama context-length error, lower `MAX_CHUNK_CHARS` in `.env` and upload again.
-- Recent commit, branch, and file-history questions do not need embeddings; they read from the local cloned repo.
+- Recent commit, branch, risky-diff, branch-compare, and file-history questions do not need embeddings; they read from the local cloned repo and GitHub API when available.
 - Project names must match an uploaded project. If a name is misspelled, the app will ask you to check spelling and show available projects.
 - Asking for recent commits plus code quality review reviews recent commit diffs instead of only listing commits.
 - The chat UI keeps the current conversation in memory and sends recent turns to the API, so follow-up questions can refer to the same project or previous commit list.
