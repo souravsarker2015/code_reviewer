@@ -900,6 +900,156 @@ def history_has_recent_commits(request: ChatRequest) -> bool:
     return "recent commits for" in text or "recent commit code-quality review" in text
 
 
+CHAT_SCOPE_MESSAGE = (
+    "This chat app only answers questions about uploaded GitHub projects, source code, "
+    "documentation, commits, branches, pull requests, diffs, and code review. "
+    "Please ask a repository-related question."
+)
+
+REPOSITORY_TOPIC_TERMS = (
+    "api",
+    "architecture",
+    "auth",
+    "authentication",
+    "backend",
+    "branch",
+    "branches",
+    "bug",
+    "build",
+    "changelog",
+    "class",
+    "classes",
+    "code",
+    "commit",
+    "component",
+    "config",
+    "database",
+    "dependency",
+    "dependencies",
+    "deploy",
+    "diff",
+    "docs",
+    "documentation",
+    "endpoint",
+    "env",
+    "error",
+    "file",
+    "frontend",
+    "function",
+    "git",
+    "github",
+    "history",
+    "issue",
+    "merge",
+    "module",
+    "performance",
+    "pr",
+    "pull request",
+    "pull requests",
+    "quality",
+    "readme",
+    "refactor",
+    "release",
+    "repo",
+    "repository",
+    "repositories",
+    "review",
+    "risk",
+    "route",
+    "schema",
+    "security",
+    "service",
+    "source",
+    "test",
+)
+
+REPOSITORY_ACTION_TERMS = (
+    "compare",
+    "explain",
+    "find",
+    "generate",
+    "how",
+    "review",
+    "show",
+    "summary",
+    "summarize",
+    "what",
+    "where",
+    "who",
+    "why",
+)
+
+OFF_TOPIC_TERMS = (
+    "astrology",
+    "celebrity",
+    "cooking",
+    "football",
+    "horoscope",
+    "joke",
+    "movie",
+    "news",
+    "poem",
+    "politics",
+    "recipe",
+    "song",
+    "sports",
+    "stock price",
+    "travel",
+    "weather",
+)
+
+
+def has_uploaded_project_reference(question: str) -> bool:
+    normalized_question = normalize_name(question)
+    return any(
+        normalize_name(project["project_name"]) in normalized_question
+        for project in get_all_projects()
+        if project["project_name"]
+    )
+
+
+def contains_policy_term(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        escaped = re.escape(term)
+        if " " in term:
+            pattern = rf"\b{escaped}\b"
+        else:
+            pattern = rf"\b{escaped}s?\b"
+        if re.search(pattern, text, re.I):
+            return True
+    return False
+
+
+def is_repository_scoped_question(request: ChatRequest) -> bool:
+    question = request.question.strip()
+    lowered = question.lower()
+    if not lowered:
+        return False
+
+    has_repo_topic = contains_policy_term(lowered, REPOSITORY_TOPIC_TERMS)
+    has_off_topic = contains_policy_term(lowered, OFF_TOPIC_TERMS)
+    if has_off_topic and not has_repo_topic:
+        return False
+
+    if has_repo_topic:
+        return True
+
+    if extract_commit_refs(question) or extract_file_path_from_question(question):
+        return True
+
+    if has_uploaded_project_reference(question):
+        return True
+
+    conversation = history_context(request)
+    if conversation and refers_to_previous(question):
+        return True
+
+    if request.project_name and contains_policy_term(lowered, REPOSITORY_ACTION_TERMS):
+        return True
+
+    return False
+
+
 def extract_commit_refs(question: str) -> list[str]:
     return re.findall(r"\b[0-9a-fA-F]{7,40}\b", question)
 
@@ -1660,6 +1810,9 @@ async def upload_projects(file: UploadFile = File(...)) -> dict[str, Any]:
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
+
+    if not is_repository_scoped_question(request):
+        return ChatResponse(answer=CHAT_SCOPE_MESSAGE, citations=[])
 
     pr_answer = pull_request_chat_response(request)
     if pr_answer:

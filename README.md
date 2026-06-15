@@ -2,6 +2,8 @@
 
 A simple local full-stack RAG chat app for GitHub projects.
 
+For a client-facing overview, feature description, limitations, performance notes, and future roadmap, see [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md).
+
 - Frontend: Next.js, TypeScript, Tailwind CSS
 - Backend: FastAPI, Python
 - Vector database: local ChromaDB
@@ -146,6 +148,7 @@ Is PR #12 mergeable with main for chabot-mvp project?
 ## Notes
 
 - This is local-development software. Do not expose it directly to the internet.
+- Chat is intentionally scoped to uploaded GitHub projects, source code, documentation, git history, pull requests, diffs, and code review. General-purpose questions are rejected.
 - Large repositories can take a while to clone and index.
 - Re-uploading a project updates the clone and replaces that project's indexed chunks.
 - The default models can be changed in `.env` with `OLLAMA_CHAT_MODEL` and `OLLAMA_EMBEDDING_MODEL`.

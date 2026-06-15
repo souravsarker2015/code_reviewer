@@ -331,7 +331,7 @@ export default function Home() {
               <div className="max-h-[560px] min-h-[320px] overflow-y-auto px-4 py-4">
                 {chatMessages.length === 0 ? (
                   <div className="flex h-64 items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
-                    Ask about code quality, recent commits, branches, files, or architecture.
+                    Ask only about uploaded projects, code quality, commits, branches, files, PRs, or architecture.
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -370,7 +370,7 @@ export default function Home() {
               <form onSubmit={askQuestion} className="border-t border-slate-100 p-4">
                 <textarea
                   className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm leading-6"
-                  placeholder="Ask a follow-up about the same project..."
+                  placeholder="Ask a repository/code-review question..."
                   value={question}
                   onChange={(event) => setQuestion(event.target.value)}
                 />
