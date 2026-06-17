@@ -48,20 +48,27 @@ branch=canary
 
 ## Local Setup
 
-1. Create an environment file:
+1. Clone the project:
+
+```bash
+git clone https://github.com/souravsarker2015/code_reviewer.git
+cd code_reviewer
+```
+
+2. Create an environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Install Ollama and pull the default local models:
+3. Install Ollama and pull the default local models:
 
 ```bash
 ollama pull qwen2.5-coder:7b
 ollama pull nomic-embed-text
 ```
 
-3. Make sure Ollama is running:
+4. Make sure Ollama is running:
 
 ```bash
 ollama serve
@@ -69,7 +76,7 @@ ollama serve
 
 If Ollama is already running as a desktop/background service, you do not need a second `ollama serve`.
 
-4. Start the API:
+5. Start the API:
 
 ```bash
 cd apps/api
@@ -79,7 +86,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-5. Start the web app in another terminal:
+6. Start the web app in another terminal:
 
 ```bash
 cd apps/web
@@ -87,7 +94,7 @@ npm install
 npm run dev
 ```
 
-6. Open:
+7. Open:
 
 ```text
 http://localhost:3000
